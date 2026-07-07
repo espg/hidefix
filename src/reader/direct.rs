@@ -9,7 +9,7 @@ use super::{
 use crate::extent::Extents;
 use crate::idx::Dataset;
 
-/// A parallel reader opening the file at `path` once per worker: the
+/// A parallel reader opening the file at `path` once per rayon job: the
 /// [`File::open`] specialization of [`ParSourceReader`].
 pub struct Direct<'a, const D: usize> {
     ds: &'a Dataset<'a, D>,

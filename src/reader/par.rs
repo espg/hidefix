@@ -1,5 +1,5 @@
 //! Parallel reader for sources that can hand out an independent [`Read`] + [`Seek`]
-//! handle per worker.
+//! handle per rayon job (never shared across threads).
 //!
 //! [`ParSourceReader`] generalizes [`Direct`](super::direct::Direct) (which opens the
 //! file once per rayon worker) to any handle factory. This makes parallel decoding
