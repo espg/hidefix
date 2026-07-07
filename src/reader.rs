@@ -1,7 +1,8 @@
 pub mod cache;
-pub(crate) mod chunk;
+pub mod chunk;
 pub mod dataset;
 pub mod direct;
+pub mod par;
 #[cfg(feature = "s3")]
 pub mod s3;
 pub mod stream;
