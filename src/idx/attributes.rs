@@ -25,6 +25,13 @@ pub enum AttributeValue {
 /// Attributes of a group or dataset, ordered for deterministic serialization.
 pub type Attributes = BTreeMap<String, AttributeValue>;
 
+/// Per-dataset metadata captured at index time.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DatasetMeta {
+    pub attributes: Attributes,
+    pub dim_names: Vec<String>,
+}
+
 /// netCDF-internal attributes that describe file structure rather than data;
 /// hidden from consumers (matching h5netcdf/netCDF4 behaviour).
 const INTERNAL: &[&str] = &[
@@ -35,6 +42,7 @@ const INTERNAL: &[&str] = &[
     "_Netcdf4Dimid",
     "_Netcdf4Coordinates",
     "_NCProperties",
+    "_nc3_strict",
 ];
 
 /// Read all (non-internal) attributes of an HDF5 group or dataset.
