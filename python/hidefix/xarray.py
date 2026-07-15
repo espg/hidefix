@@ -121,6 +121,10 @@ class HidefixDataStore(WritableCFDataStore):
 
     def open_store_variable(self, k):
         ds = self.idx.dataset(k, self.group)
+        # NOTE (phase 2): dataset_attributes/dataset_dims raise KeyError on an
+        # index serialized before dataset_meta existed (empty metadata). The
+        # backend builds a fresh index today so this is unreachable; the
+        # serialized-index opening path introduced in phase 2 must guard here.
         attributes = self.idx.dataset_attributes(k, self.group)
         dimensions = tuple(self.idx.dataset_dims(k, self.group))
 
