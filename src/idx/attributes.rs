@@ -186,7 +186,8 @@ pub fn dimension_names(ds: &hdf5::Dataset) -> Vec<String> {
 }
 
 /// Read a fixed-length string attribute raw, using the FILE datatype (no
-/// conversion involved), and trim trailing NULs/padding per element.
+/// conversion involved), and trim trailing NUL padding per element (only NULs:
+/// netCDF4/h5netcdf preserve other trailing whitespace).
 fn read_fixed_strings(attr: &hdf5::Attribute, len: usize) -> Result<Vec<String>, anyhow::Error> {
     use hdf5::h5check;
 
@@ -208,7 +209,7 @@ fn read_fixed_strings(attr: &hdf5::Attribute, len: usize) -> Result<Vec<String>,
         .chunks_exact(len)
         .map(|chunk| {
             let end = chunk.iter().position(|&b| b == 0).unwrap_or(len);
-            String::from_utf8_lossy(&chunk[..end]).trim_end().to_string()
+            String::from_utf8_lossy(&chunk[..end]).into_owned()
         })
         .collect())
 }
