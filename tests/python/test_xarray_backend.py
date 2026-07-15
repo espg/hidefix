@@ -35,9 +35,12 @@ def test_coads_nc(coads, plot):
         plt.show()
 
 
-def assert_engines_equal(path, **kwargs):
-    """The hidefix engine must produce the same dataset as the netcdf4 engine."""
-    hfx = xr.open_dataset(path, engine='hidefix', **kwargs)
+def assert_engines_equal(path, hidefix_kwargs=None, **kwargs):
+    """The hidefix engine must produce the same dataset as the netcdf4 engine.
+
+    `hidefix_kwargs` are passed to the hidefix engine only (e.g. `index`)."""
+    hfx = xr.open_dataset(path, engine='hidefix', **kwargs,
+                          **(hidefix_kwargs or {}))
     ncd = xr.open_dataset(path, engine='netcdf4', **kwargs)
 
     assert set(hfx.data_vars) == set(ncd.data_vars)
