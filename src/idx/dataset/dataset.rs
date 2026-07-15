@@ -164,6 +164,25 @@ impl<const D: usize> Dataset<'_, D> {
         )
     }
 
+    /// Take ownership of the chunk table, untying the dataset from the buffer
+    /// it was (zero-copy) deserialized from.
+    pub fn into_owned(self) -> Dataset<'static, D> {
+        Dataset {
+            dtype: self.dtype,
+            dsize: self.dsize,
+            order: self.order,
+            chunks: Cow::Owned(self.chunks.into_owned()),
+            shape: self.shape,
+            chunk_shape: self.chunk_shape,
+            chunk_shape_reduced: self.chunk_shape_reduced,
+            scaled_dim_sz: self.scaled_dim_sz,
+            dim_sz: self.dim_sz,
+            chunk_dim_sz: self.chunk_dim_sz,
+            shuffle: self.shuffle,
+            gzip: self.gzip,
+        }
+    }
+
     pub fn new<'a, C>(
         dtype: Datatype,
         order: ByteOrder,

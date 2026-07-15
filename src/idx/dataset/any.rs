@@ -49,6 +49,24 @@ impl DatasetD<'_> {
         }
     }
 
+    /// Take ownership of the chunk table, untying the dataset from the buffer
+    /// it was (zero-copy) deserialized from.
+    pub fn into_owned(self) -> DatasetD<'static> {
+        use DatasetD::*;
+        match self {
+            D0(ds) => D0(ds.into_owned()),
+            D1(ds) => D1(ds.into_owned()),
+            D2(ds) => D2(ds.into_owned()),
+            D3(ds) => D3(ds.into_owned()),
+            D4(ds) => D4(ds.into_owned()),
+            D5(ds) => D5(ds.into_owned()),
+            D6(ds) => D6(ds.into_owned()),
+            D7(ds) => D7(ds.into_owned()),
+            D8(ds) => D8(ds.into_owned()),
+            D9(ds) => D9(ds.into_owned()),
+        }
+    }
+
     pub fn as_reader(&self, path: &Path) -> Result<Box<dyn Reader + '_>, anyhow::Error> {
         use crate::reader::cache::CacheReader;
         use std::fs;

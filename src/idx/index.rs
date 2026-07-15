@@ -50,6 +50,15 @@ impl Index<'_> {
             root: GroupIndex::index_group(&hf.group("/")?, path)?,
         })
     }
+
+    /// Take ownership of all borrowed chunk tables, untying the index from the
+    /// buffer it was (zero-copy) deserialized from.
+    pub fn into_owned(self) -> Index<'static> {
+        Index {
+            path: self.path,
+            root: self.root.into_owned(),
+        }
+    }
 }
 
 impl TryFrom<&Path> for Index<'_> {
@@ -141,6 +150,26 @@ impl GroupIndex<'_> {
             attributes: read_attributes(grp),
             dataset_meta,
         })
+    }
+
+    /// Take ownership of all borrowed chunk tables, untying the group from the
+    /// buffer it was (zero-copy) deserialized from.
+    pub fn into_owned(self) -> GroupIndex<'static> {
+        GroupIndex {
+            path: self.path,
+            datasets: self
+                .datasets
+                .into_iter()
+                .map(|(k, v)| (k, v.into_owned()))
+                .collect(),
+            groups: self
+                .groups
+                .into_iter()
+                .map(|(k, v)| (k, v.into_owned()))
+                .collect(),
+            attributes: self.attributes,
+            dataset_meta: self.dataset_meta,
+        }
     }
 
     /// Retrieves a reference to a dataset within a HDF5 group indexer hierarchy if it exists.
