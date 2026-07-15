@@ -53,22 +53,25 @@ class HidefixBackendEntrypoint(BackendEntrypoint):
 
         `index` skips re-indexing the file: either a `hidefix.Index`, or a
         path to / the bytes of one serialized with `Index.save` /
-        `Index.to_bytes`. The index's source fingerprint (path identity, size
-        and mtime, when known) is verified against the file; pass
-        `index_fingerprint='ignore'` to skip the check ('verify' is the
-        default).
+        `Index.to_bytes`. The index's path identity is always verified against
+        the file (reads go through the indexed path, so a wrong-file index
+        would silently return the other file's data); pass
+        `index_fingerprint='ignore'` to skip only the size/mtime staleness
+        check ('verify' is the default).
         """
         filename_or_obj = _normalize_path(filename_or_obj)
 
         if index is not None:
             if not isinstance(index, hidefix.Index):
                 index = hidefix.Index.load_index(index)
-            if index_fingerprint == 'verify':
-                _verify_index_fingerprint(index, filename_or_obj)
-            elif index_fingerprint != 'ignore':
+            if index_fingerprint not in ('verify', 'ignore'):
                 raise ValueError(
                     "index_fingerprint must be 'verify' or 'ignore', got: "
                     f"{index_fingerprint!r}")
+            _verify_index_fingerprint(
+                index,
+                filename_or_obj,
+                check_staleness=index_fingerprint == 'verify')
 
         store = HidefixDataStore.open(filename_or_obj, group, index)
 
@@ -92,17 +95,20 @@ class HidefixBackendEntrypoint(BackendEntrypoint):
         return ext in {".nc", ".nc4", ".cdf"}
 
 
-def _verify_index_fingerprint(index, filename):
+def _verify_index_fingerprint(index, filename, check_staleness=True):
     """Raise ValueError when `index` does not match `filename`: identity by
-    path, staleness by size + mtime (a size or mtime of 0 means unknown and is
-    not checked)."""
+    path (always checked -- reads go through the indexed path), staleness by
+    size + mtime only when `check_staleness` (a size or mtime of 0 means
+    unknown and is not checked)."""
     source = index.source_path
     if source is not None and os.path.exists(source) and os.path.exists(
             filename) and not os.path.samefile(source, filename):
         raise ValueError(
             f"index was built from {source!r}, not {filename!r} (reads go "
-            "through the indexed path); re-index the file or pass "
-            "index_fingerprint='ignore'")
+            "through the indexed path); re-index the file")
+
+    if not check_staleness:
+        return
 
     if index.source_size == 0 or index.source_mtime == 0:
         return

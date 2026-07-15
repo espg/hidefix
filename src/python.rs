@@ -151,20 +151,21 @@ impl Index {
     }
 
     /// Serialize the index to a file, see `to_bytes`.
-    pub fn save(&self, p: PathBuf) -> PyResult<()> {
-        std::fs::write(p, self.serialized()?)?;
+    pub fn save(&self, py: Python, p: PathBuf) -> PyResult<()> {
+        let b = self.serialized()?;
+        py.allow_threads(|| std::fs::write(p, b))?;
         Ok(())
     }
 
     /// Load an index serialized with `save` or `to_bytes`, from a path or
     /// directly from bytes.
     #[staticmethod]
-    pub fn load_index(source: &Bound<'_, PyAny>) -> PyResult<Index> {
+    pub fn load_index(py: Python, source: &Bound<'_, PyAny>) -> PyResult<Index> {
         let read;
         let bytes = if let Ok(b) = source.downcast::<PyBytes>() {
             b.as_bytes()
         } else if let Ok(p) = source.extract::<PathBuf>() {
-            read = std::fs::read(&p)?;
+            read = py.allow_threads(|| std::fs::read(&p))?;
             read.as_slice()
         } else {
             return Err(PyTypeError::new_err(
