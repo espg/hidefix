@@ -12,7 +12,10 @@ Opening from S3 differs from a local open:
   the object key (or the full URI) exactly (`os.path.samefile` is meaningless
   against an object store). The check is skipped with
   `index_fingerprint='ignore'`, e.g. when the object was renamed on upload.
-  Size/mtime staleness cannot be verified remotely and is not checked.
+  Size/mtime staleness cannot be verified remotely and is not checked. An index
+  built without a source path (`Index.source_path` is None) has nothing to
+  match, so its identity is silently not verified even under 'verify' (as with
+  the local open).
 * Reads are lazy: all metadata comes from the index, and opening fetches only
   the (small) dimension coordinate variables xarray loads to build its
   indexes. Data variable chunk ranges are fetched (with coalesced, concurrent
