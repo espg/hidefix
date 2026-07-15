@@ -1,25 +1,18 @@
 """
-An Xarray backend based on hidefix and netCDF4.
+An Xarray backend based on hidefix.
 """
 
 import os
-from pathlib import Path
 import logging
-import operator
 
 import hidefix
-import netCDF4 as nc
-import xarray as xr
 import numpy as np
 
 from xarray.backends.common import (
-    BACKEND_ENTRYPOINTS,
     BackendArray,
     BackendEntrypoint,
     WritableCFDataStore,
     _normalize_path,
-    find_root_and_group,
-    robust_getitem,
 )
 
 from xarray.core import indexing
@@ -27,12 +20,7 @@ from xarray.backends.store import StoreBackendEntrypoint
 from xarray.coding.variables import pop_to
 from xarray.core.variable import Variable
 
-from xarray.core.utils import (
-    FrozenDict,
-    close_on_error,
-    is_remote_uri,
-    try_read_magic_number_from_path,
-)
+from xarray.core.utils import FrozenDict
 
 logger = logging.getLogger(__name__)
 
@@ -85,19 +73,14 @@ class HidefixBackendEntrypoint(BackendEntrypoint):
 
 class HidefixDataStore(WritableCFDataStore):
     idx: hidefix.Index
-    path: Path
+    path: str
     group: str
-    ds: nc.Dataset
 
-    def __init__(self, path, group = None):
+    def __init__(self, path, group=None):
         self.path = path
         self.group = group
 
-        # These can be done concurrently
         self.idx = hidefix.Index(path)
-        self.ds = nc.Dataset(path, mode='r')
-        if self.group is not None:
-            self.ds = self.ds[self.group]
 
     @classmethod
     def open(
@@ -115,67 +98,58 @@ class HidefixDataStore(WritableCFDataStore):
         return cls(filename, group)
 
     def get_attrs(self):
-        return FrozenDict((k, self.ds.getncattr(k)) for k in self.ds.ncattrs())
+        return FrozenDict(self.idx.attributes(self.group))
 
     def get_dimensions(self):
-        return FrozenDict((k, len(v)) for k, v in self.ds.dimensions.items())
+        # dimension sizes from the per-variable dims/shape zip; a dimension
+        # scale names itself, so coordinate variables are covered too.
+        dims = {}
+        for name in self.idx.datasets(self.group):
+            ds = self.idx.dataset(name, self.group)
+            for dim, size in zip(self.idx.dataset_dims(name, self.group),
+                                 ds.shape()):
+                dims[dim] = int(size)
+        return FrozenDict(dims)
 
     def get_encoding(self):
-        return {
-            "unlimited_dims":
-            {k
-             for k, v in self.ds.dimensions.items() if v.isunlimited()}
-        }
+        # unlimited dimensions are not captured by the index.
+        return {"unlimited_dims": set()}
 
     def get_variables(self):
         return FrozenDict(
             (k, self.open_store_variable(k)) for k in self.idx.datasets(self.group))
 
     def open_store_variable(self, k):
-        var = self.ds.variables[k]
-        attributes = {k: var.getncattr(k) for k in var.ncattrs()}
+        ds = self.idx.dataset(k, self.group)
+        attributes = self.idx.dataset_attributes(k, self.group)
+        dimensions = tuple(self.idx.dataset_dims(k, self.group))
 
         data = indexing.LazilyIndexedArray(
-            HidefixArray(self, k, self.group, var, attributes))
+            HidefixArray(self, k, self.group, ds, attributes))
 
+        # fill values are applied (as NaN) by HidefixArray.
         attributes.pop('_FillValue', None)
         attributes.pop('missing_value', None)
 
-        dimensions = var.dimensions
-        xr.backends.netCDF4_._ensure_fill_value_valid(data, attributes)
         encoding = {}
-        filters = var.filters()
-        if filters is not None:
-            encoding.update(filters)
-        chunking = var.chunking()
-        if chunking is not None:
-            if chunking == "contiguous":
-                encoding["contiguous"] = True
-                encoding["chunksizes"] = None
-            else:
-                encoding["contiguous"] = False
-                encoding["chunksizes"] = tuple(chunking)
-        # TODO: figure out how to round-trip "endian-ness" without raising
-        # warnings from netCDF4
-        # encoding['endian'] = var.endian()
         pop_to(attributes, encoding, "least_significant_digit")
         # save source so __repr__ can detect if it's local or not
         encoding["source"] = self.path
-        encoding["original_shape"] = var.shape
-        encoding["dtype"] = var.dtype
+        encoding["original_shape"] = data.shape
+        encoding["dtype"] = data.dtype
 
         return Variable(dimensions, data, attributes, encoding)
 
 
 class HidefixArray(BackendArray):
 
-    def __init__(self, store, name, group, var, attributes):
+    def __init__(self, store, name, group, ds, attributes):
         self.store = store
         self.variable_name = name
         self.group = group
 
-        self.shape = var.shape
-        self.dtype = var.dtype
+        self.shape = tuple(int(s) for s in ds.shape())
+        self.dtype = np.dtype(ds.dtype())
         self.fill_value = attributes.get('_FillValue', None)
         missing = attributes.get('missing_value', None)
         if missing is not None:
@@ -195,4 +169,3 @@ class HidefixArray(BackendArray):
         if self.fill_value is not None:
             array.apply_fill_value(self.fill_value, np.nan, data)
         return data
-

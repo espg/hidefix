@@ -13,14 +13,14 @@ classifiers = [
 
 dependencies = [
     "numpy",
-    "xarray>=2023",
-    "netCDF4"
+    "xarray>=2023"
 ]
 
 
 [tool.maturin]
 python-source = "python"
 features = [ "static", "python", "extension-module" ]
+no-default-features = true
 
 [tool.pytest.ini_options]
 addopts = "--benchmark-disable"
