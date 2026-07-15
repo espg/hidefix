@@ -26,23 +26,39 @@ fn hidefix(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// The location of, and connection configuration for, an object on S3 (or an
 /// S3-compatible object store such as Minio).
 ///
-/// Credentials: pass `access_key`/`secret_key` (and optionally
-/// `session_token`) explicitly, or `anonymous=True` for unsigned requests;
-/// otherwise the ambient AWS configuration is used (`AWS_ACCESS_KEY_ID` /
-/// `AWS_SECRET_ACCESS_KEY` environment variables or the profile files).
+/// Credentials come from exactly one source, and the modes are mutually
+/// exclusive: pass `access_key`/`secret_key` (and optionally `session_token`)
+/// for explicit signed requests, or `anonymous=True` for unsigned requests,
+/// but not both (combining them raises `ValueError`); with neither the ambient
+/// AWS configuration is used (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+/// environment variables or the profile files).
 ///
 /// `region` falls back to `AWS_REGION` / `AWS_DEFAULT_REGION` when not given.
 /// A custom `endpoint` (e.g. `http://localhost:9000` for Minio) implies
 /// path-style addressing unless overridden with `path_style`.
 #[cfg(feature = "s3")]
 #[pyclass]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct S3Source {
     bucket: Box<s3::Bucket>,
 
     /// Key of the object in the bucket.
     #[pyo3(get)]
     key: String,
+}
+
+// Manual, credential-redacting Debug: the derived impl would print the boxed
+// `s3::Bucket`, whose rust-s3 Debug includes the secret key. Only the bucket
+// name, key and region are safe to format.
+#[cfg(feature = "s3")]
+impl std::fmt::Debug for S3Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("S3Source")
+            .field("bucket", &self.bucket.name())
+            .field("key", &self.key)
+            .field("region", &self.bucket.region())
+            .finish()
+    }
 }
 
 #[cfg(feature = "s3")]
@@ -64,6 +80,14 @@ impl S3Source {
     ) -> PyResult<S3Source> {
         use pyo3::exceptions::PyValueError;
         use s3::creds::Credentials;
+
+        if anonymous && (access_key.is_some() || secret_key.is_some() || session_token.is_some()) {
+            return Err(PyValueError::new_err(
+                "anonymous=True is mutually exclusive with \
+                 access_key/secret_key/session_token: pass anonymous=True for \
+                 unsigned requests, or the explicit credentials, not both",
+            ));
+        }
 
         let credentials = if anonymous {
             Credentials::anonymous()
