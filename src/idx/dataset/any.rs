@@ -86,6 +86,32 @@ impl DatasetD<'_> {
         })
     }
 
+    /// A [`Reader`](crate::reader::s3::S3Reader) fetching chunks from `key` in `bucket`
+    /// with ranged `GET`s, see [`crate::reader::s3`]. The bucket carries the region,
+    /// endpoint and credentials.
+    #[cfg(feature = "s3")]
+    pub fn as_s3_reader(
+        &self,
+        bucket: Box<s3::Bucket>,
+        key: &str,
+    ) -> Result<Box<dyn Reader + '_>, anyhow::Error> {
+        use crate::reader::s3::S3Reader;
+        use DatasetD::*;
+
+        Ok(match self {
+            D0(ds) => Box::new(S3Reader::with_dataset(ds, bucket, key)?),
+            D1(ds) => Box::new(S3Reader::with_dataset(ds, bucket, key)?),
+            D2(ds) => Box::new(S3Reader::with_dataset(ds, bucket, key)?),
+            D3(ds) => Box::new(S3Reader::with_dataset(ds, bucket, key)?),
+            D4(ds) => Box::new(S3Reader::with_dataset(ds, bucket, key)?),
+            D5(ds) => Box::new(S3Reader::with_dataset(ds, bucket, key)?),
+            D6(ds) => Box::new(S3Reader::with_dataset(ds, bucket, key)?),
+            D7(ds) => Box::new(S3Reader::with_dataset(ds, bucket, key)?),
+            D8(ds) => Box::new(S3Reader::with_dataset(ds, bucket, key)?),
+            D9(ds) => Box::new(S3Reader::with_dataset(ds, bucket, key)?),
+        })
+    }
+
     pub fn as_streamer(&self, path: &Path) -> Result<Box<dyn Streamer + '_>, anyhow::Error> {
         use crate::reader::stream::StreamReader;
         use DatasetD::*;

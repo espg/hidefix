@@ -18,7 +18,115 @@ use crate::prelude::*;
 #[pymodule]
 fn hidefix(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Index>()?;
+    #[cfg(feature = "s3")]
+    m.add_class::<S3Source>()?;
     Ok(())
+}
+
+/// The location of, and connection configuration for, an object on S3 (or an
+/// S3-compatible object store such as Minio).
+///
+/// Credentials: pass `access_key`/`secret_key` (and optionally
+/// `session_token`) explicitly, or `anonymous=True` for unsigned requests;
+/// otherwise the ambient AWS configuration is used (`AWS_ACCESS_KEY_ID` /
+/// `AWS_SECRET_ACCESS_KEY` environment variables or the profile files).
+///
+/// `region` falls back to `AWS_REGION` / `AWS_DEFAULT_REGION` when not given.
+/// A custom `endpoint` (e.g. `http://localhost:9000` for Minio) implies
+/// path-style addressing unless overridden with `path_style`.
+#[cfg(feature = "s3")]
+#[pyclass]
+#[derive(Debug, Clone)]
+struct S3Source {
+    bucket: Box<s3::Bucket>,
+
+    /// Key of the object in the bucket.
+    #[pyo3(get)]
+    key: String,
+}
+
+#[cfg(feature = "s3")]
+#[pymethods]
+impl S3Source {
+    #[new]
+    #[pyo3(signature = (bucket, key, *, region=None, endpoint=None, anonymous=false, access_key=None, secret_key=None, session_token=None, path_style=None))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        bucket: &str,
+        key: &str,
+        region: Option<String>,
+        endpoint: Option<String>,
+        anonymous: bool,
+        access_key: Option<String>,
+        secret_key: Option<String>,
+        session_token: Option<String>,
+        path_style: Option<bool>,
+    ) -> PyResult<S3Source> {
+        use pyo3::exceptions::PyValueError;
+        use s3::creds::Credentials;
+
+        let credentials = if anonymous {
+            Credentials::anonymous()
+        } else if access_key.is_some() || secret_key.is_some() {
+            Credentials::new(
+                access_key.as_deref(),
+                secret_key.as_deref(),
+                None,
+                session_token.as_deref(),
+                None,
+            )
+        } else {
+            Credentials::default()
+        }
+        .map_err(|e| PyValueError::new_err(format!("S3 credentials: {e}")))?;
+
+        let region = region
+            .or_else(|| std::env::var("AWS_REGION").ok())
+            .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok());
+
+        let region = match (endpoint, region) {
+            (Some(endpoint), region) => s3::Region::Custom {
+                region: region.unwrap_or_else(|| "us-east-1".into()),
+                endpoint,
+            },
+            (None, Some(region)) => region
+                .parse()
+                .map_err(|e| PyValueError::new_err(format!("S3 region: {e}")))?,
+            (None, None) => {
+                return Err(PyValueError::new_err(
+                    "an S3 region (or a custom endpoint) is required: pass region= or \
+                     endpoint=, or set AWS_REGION",
+                ))
+            }
+        };
+
+        let path_style = path_style.unwrap_or(matches!(region, s3::Region::Custom { .. }));
+
+        let mut bucket = s3::Bucket::new(bucket, region, credentials)
+            .map_err(|e| PyValueError::new_err(format!("S3 bucket: {e}")))?;
+        if path_style {
+            bucket = bucket.with_path_style();
+        }
+
+        Ok(S3Source {
+            bucket,
+            key: key.into(),
+        })
+    }
+
+    /// Name of the bucket.
+    #[getter]
+    pub fn bucket(&self) -> String {
+        self.bucket.name()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "S3Source(bucket: {}, key: {})",
+            self.bucket.name(),
+            self.key
+        )
+    }
 }
 
 #[pyclass]
@@ -190,6 +298,8 @@ impl Index {
             idx: self.idx.clone(),
             group: group.map(String::from),
             ds: String::from(s),
+            #[cfg(feature = "s3")]
+            s3: None,
         })
     }
 
@@ -250,6 +360,11 @@ struct Dataset {
     idx: Arc<idx::Index<'static>>,
     group: Option<String>,
     ds: String,
+
+    /// When set, reads fetch chunks from this object instead of the local
+    /// indexed path.
+    #[cfg(feature = "s3")]
+    s3: Option<S3Source>,
 }
 
 impl Dataset {
@@ -289,7 +404,15 @@ impl Dataset {
             (a, dst)
         };
 
-        py.allow_threads(|| {
+        py.allow_threads(|| -> Result<usize, anyhow::Error> {
+            // Chunks are fetched with concurrent range requests (the S3 reader is
+            // internally concurrent, not rayon-parallel like the local reader).
+            #[cfg(feature = "s3")]
+            if let Some(s3) = &self.s3 {
+                let mut r = ds.as_s3_reader(s3.bucket.clone(), &s3.key)?;
+                return r.values_to((indices, counts), dst);
+            }
+
             let r = ds.as_par_reader(&self.idx.path().unwrap())?;
             r.values_to_par((indices, counts), dst)
         })?;
@@ -346,6 +469,19 @@ impl Dataset {
 impl Dataset {
     fn __repr__(&self) -> String {
         format!("Dataset (\"{}\")", self.ds)
+    }
+
+    /// A copy of this dataset handle that reads its chunks from `source`
+    /// (which must hold the same file the index was built from) instead of
+    /// the local indexed path.
+    #[cfg(feature = "s3")]
+    pub fn with_s3(&self, source: S3Source) -> Dataset {
+        Dataset {
+            idx: self.idx.clone(),
+            group: self.group.clone(),
+            ds: self.ds.clone(),
+            s3: Some(source),
+        }
     }
 
     fn __len__(&self) -> usize {

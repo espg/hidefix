@@ -19,7 +19,9 @@ dependencies = [
 
 [tool.maturin]
 python-source = "python"
-features = [ "static", "python", "extension-module" ]
+# "s3" is enabled for the wheel here rather than folded into the cargo
+# "python" feature, so cargo consumers of "python" do not pull in the S3 stack.
+features = [ "static", "python", "extension-module", "s3" ]
 no-default-features = true
 
 [tool.pytest.ini_options]
