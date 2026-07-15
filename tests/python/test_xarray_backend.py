@@ -53,6 +53,10 @@ def assert_engines_equal(path, **kwargs):
         assert set(hfx[name].attrs) == set(ncd[name].attrs)
         for k, v in ncd[name].attrs.items():
             np.testing.assert_array_equal(hfx[name].attrs[k], v)
+        # decoded dtype must match: a float32 scale_factor/add_offset must
+        # unpack to float32, not silently upcast to float64.
+        assert hfx[name].dtype == ncd[name].dtype, (
+            f"{name}: {hfx[name].dtype} != {ncd[name].dtype}")
         np.testing.assert_array_equal(hfx[name].values, ncd[name].values)
 
 
@@ -82,6 +86,42 @@ def test_engine_equality_decoded_time(tmp_path):
 
     hfx = xr.open_dataset(path, engine='hidefix')
     assert np.issubdtype(hfx['time'].dtype, np.datetime64)
+
+
+def test_engine_equality_packed(tmp_path):
+    # A packed int16 variable with float32 scale_factor/add_offset must unpack
+    # to float32 through both engines; a float64-scaled variable is included for
+    # contrast. netCDF4 is the write-side oracle.
+    import netCDF4 as nc4
+
+    path = tmp_path / 'packed.nc'
+    ds = nc4.Dataset(path, 'w')
+    ds.createDimension('x', 5)
+
+    p = ds.createVariable('packed', np.int16, ('x', ))
+    p.scale_factor = np.float32(0.1)
+    p.add_offset = np.float32(5.0)
+    p[:] = np.arange(5, dtype=np.int16)
+
+    q = ds.createVariable('packed64', np.int16, ('x', ))
+    q.scale_factor = np.float64(0.1)
+    q.add_offset = np.float64(5.0)
+    q[:] = np.arange(5, dtype=np.int16)
+
+    ds.close()
+
+    assert_engines_equal(path)
+
+    # explicit dtype expectations (guards against both engines agreeing on the
+    # wrong upcast, which cross-engine equality alone would not catch).
+    hfx = xr.open_dataset(path, engine='hidefix')
+    assert hfx['packed'].dtype == np.float32
+    assert hfx['packed64'].dtype == np.float64
+
+    # the raw (undecoded) scale_factor/add_offset must themselves be float32.
+    raw = xr.open_dataset(path, engine='hidefix', mask_and_scale=False)
+    assert raw['packed'].attrs['scale_factor'].dtype == np.float32
+    assert raw['packed'].attrs['add_offset'].dtype == np.float32
 
 
 @pytest.mark.skip(reason = 'xarray, cftime, pandas no longer manages to decode dates here')
