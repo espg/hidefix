@@ -75,10 +75,12 @@ impl SerializedIndex {
     }
 
     /// Parse bytes produced by [`SerializedIndex::to_bytes`]. Fails with a
-    /// clear message on foreign bytes or an unknown format version.
+    /// clear message on truncated or foreign bytes or an unknown format
+    /// version.
     pub fn from_bytes(b: &[u8]) -> Result<SerializedIndex, anyhow::Error> {
+        anyhow::ensure!(b.len() >= 8, "truncated serialized index");
         anyhow::ensure!(
-            b.len() > 8 && b[..4] == MAGIC,
+            b[..4] == MAGIC,
             "not a serialized hidefix index (bad magic)"
         );
         let version = u32::from_le_bytes(b[4..8].try_into().unwrap());
@@ -87,7 +89,8 @@ impl SerializedIndex {
             "unsupported hidefix index format version {version} (expected {FORMAT_VERSION}): \
              re-serialize the index with a matching hidefix"
         );
-        let r = flexbuffers::Reader::get_root(&b[8..])?;
+        let r = flexbuffers::Reader::get_root(&b[8..])
+            .map_err(|e| anyhow::anyhow!("invalid serialized index payload: {e}"))?;
         Ok(SerializedIndex::deserialize(r)?)
     }
 
@@ -166,5 +169,23 @@ mod tests {
     fn bad_magic_rejected() {
         let e = SerializedIndex::from_bytes(b"not an index at all").unwrap_err();
         assert!(e.to_string().contains("bad magic"), "{e}");
+    }
+
+    #[test]
+    fn truncated_rejected() {
+        for b in [&b""[..], &b"HFX"[..], &b"HFXI\x01\x00\x00"[..]] {
+            let e = SerializedIndex::from_bytes(b).unwrap_err();
+            assert!(e.to_string().contains("truncated"), "{e}");
+        }
+    }
+
+    #[test]
+    fn empty_payload_rejected() {
+        // header only, valid magic and version: an invalid payload, not bad magic.
+        let mut b = MAGIC.to_vec();
+        b.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+
+        let e = SerializedIndex::from_bytes(&b).unwrap_err();
+        assert!(e.to_string().contains("invalid serialized index payload"), "{e}");
     }
 }
