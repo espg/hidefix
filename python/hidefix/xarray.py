@@ -13,9 +13,10 @@ Opening from S3 differs from a local open:
   against an object store). The check is skipped with
   `index_fingerprint='ignore'`, e.g. when the object was renamed on upload.
   Size/mtime staleness cannot be verified remotely and is not checked.
-* Reads are lazy: opening the dataset touches only the index; chunk ranges are
-  fetched (with coalesced, concurrent range requests) when a variable is
-  actually indexed.
+* Reads are lazy: all metadata comes from the index, and opening fetches only
+  the (small) dimension coordinate variables xarray loads to build its
+  indexes. Data variable chunk ranges are fetched (with coalesced, concurrent
+  range requests) when a variable is actually indexed.
 """
 
 import os
