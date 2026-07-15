@@ -1,3 +1,4 @@
+import gc
 import os
 import shutil
 import struct
@@ -100,6 +101,43 @@ def test_index_for_other_file_rejected(coads, tmp_path):
 
     with pytest.raises(ValueError, match='built from'):
         xr.open_dataset(other, engine='hidefix', decode_times=False, index=idx)
+
+    # 'ignore' only skips the staleness check: reads go through the indexed
+    # path, so a wrong-file index would silently return the other file's data.
+    with pytest.raises(ValueError, match='built from'):
+        xr.open_dataset(other,
+                        engine='hidefix',
+                        decode_times=False,
+                        index=idx,
+                        index_fingerprint='ignore')
+
+
+def test_size_changed_index_rejected(coads, tmp_path):
+    f = tmp_path / 'coads.nc4'
+    shutil.copy(coads, f)
+    b = Index(f).to_bytes()
+
+    # append a byte: the size no longer matches the fingerprint.
+    with open(f, 'ab') as fd:
+        fd.write(b'\0')
+
+    with pytest.raises(ValueError, match='size/mtime'):
+        xr.open_dataset(f, engine='hidefix', decode_times=False, index=b)
+
+
+def test_load_index_owns_bytes(coads):
+    idx = Index(coads)
+    expected = idx['SST'][()]
+
+    b = idx.to_bytes()
+    li = Index.load_index(b)
+    del b, idx
+    gc.collect()
+
+    np.testing.assert_array_equal(li['SST'][()], expected)
+
+    ds = xr.open_dataset(coads, engine='hidefix', decode_times=False, index=li)
+    assert ds['SST'].shape == expected.shape
 
 
 def test_invalid_fingerprint_mode_rejected(coads):
