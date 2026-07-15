@@ -5,9 +5,9 @@ use byte_slice_cast::ToMutByteSlice;
 use ndarray::parallel::prelude::*;
 use numpy::{PyArray, PyArray1, PyArrayDyn};
 use pyo3::{
-    exceptions::PyKeyError,
+    exceptions::{PyKeyError, PyTypeError},
     prelude::*,
-    types::{PyDict, PyInt, PySlice, PyTuple},
+    types::{PyBytes, PyDict, PyInt, PySlice, PyTuple},
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,6 +25,15 @@ fn hidefix(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[derive(Debug)]
 struct Index {
     idx: Arc<idx::Index<'static>>,
+
+    /// Size in bytes of the source file when it was indexed (0 if unknown).
+    #[pyo3(get)]
+    source_size: u64,
+
+    /// Modification time (unix seconds) of the source file when it was
+    /// indexed (0 if unknown).
+    #[pyo3(get)]
+    source_mtime: i64,
 }
 
 impl Index {
@@ -36,6 +45,12 @@ impl Index {
                 .ok_or_else(|| PyKeyError::new_err(format!("group not found: {group}"))),
             None => Ok(&self.idx),
         }
+    }
+
+    /// Serialize with the version and source-fingerprint header.
+    fn serialized(&self) -> PyResult<Vec<u8>> {
+        let s = idx::SerializedIndex::from_index(&self.idx, self.source_size, self.source_mtime)?;
+        Ok(s.to_bytes()?)
     }
 }
 
@@ -114,8 +129,54 @@ fn attributes_to_py(py: Python, attrs: &idx::Attributes) -> PyResult<PyObject> {
 impl Index {
     #[new]
     pub fn new(p: PathBuf) -> PyResult<Index> {
+        let idx = Arc::new(idx::Index::index(&p)?);
+        let (source_size, source_mtime) = idx::serialized::file_fingerprint(&p);
         Ok(Index {
-            idx: Arc::new(idx::Index::index(&p)?),
+            idx,
+            source_size,
+            source_mtime,
+        })
+    }
+
+    /// Path of the source file this index was built from.
+    #[getter]
+    pub fn source_path(&self) -> Option<String> {
+        self.idx.path().map(|p| p.to_string_lossy().into_owned())
+    }
+
+    /// Serialize the index (with a format-version and source-fingerprint
+    /// header) to bytes accepted by `load_index`.
+    pub fn to_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        Ok(PyBytes::new_bound(py, &self.serialized()?))
+    }
+
+    /// Serialize the index to a file, see `to_bytes`.
+    pub fn save(&self, p: PathBuf) -> PyResult<()> {
+        std::fs::write(p, self.serialized()?)?;
+        Ok(())
+    }
+
+    /// Load an index serialized with `save` or `to_bytes`, from a path or
+    /// directly from bytes.
+    #[staticmethod]
+    pub fn load_index(source: &Bound<'_, PyAny>) -> PyResult<Index> {
+        let read;
+        let bytes = if let Ok(b) = source.downcast::<PyBytes>() {
+            b.as_bytes()
+        } else if let Ok(p) = source.extract::<PathBuf>() {
+            read = std::fs::read(&p)?;
+            read.as_slice()
+        } else {
+            return Err(PyTypeError::new_err(
+                "expected a path to, or the bytes of, a serialized index",
+            ));
+        };
+
+        let s = idx::SerializedIndex::from_bytes(bytes)?;
+        Ok(Index {
+            idx: Arc::new(s.index()?),
+            source_size: s.source_size,
+            source_mtime: s.source_mtime,
         })
     }
 
@@ -418,6 +479,29 @@ mod tests {
 
             let arr = ds.__getitem__(py, PyTuple::new(py, vec![0, 10, 1]));
             println!("{:?}", arr);
+        });
+    }
+
+    #[test]
+    fn serialized_index_roundtrip() {
+        with_gil(|py| {
+            let i = Index::new("tests/data/coads_climatology.nc4".into()).unwrap();
+            assert!(i.source_size > 0);
+            assert!(i.source_mtime > 0);
+
+            let b = i.to_bytes(py).unwrap();
+            let li = Index::load_index(b.as_any()).unwrap();
+
+            assert_eq!(li.source_size, i.source_size);
+            assert_eq!(li.source_mtime, i.source_mtime);
+            assert_eq!(
+                li.source_path().as_deref(),
+                Some("tests/data/coads_climatology.nc4")
+            );
+
+            let ds = li.dataset("SST", None).unwrap();
+            ds.__getitem__(py, PyTuple::new(py, vec![PySlice::new(py, 0, 10, 1)]))
+                .unwrap();
         });
     }
 
