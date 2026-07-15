@@ -491,7 +491,7 @@ mod tests {
             assert!(i.source_mtime > 0);
 
             let b = i.to_bytes(py).unwrap();
-            let li = Index::load_index(b.as_any()).unwrap();
+            let li = Index::load_index(py, b.as_any()).unwrap();
 
             assert_eq!(li.source_size, i.source_size);
             assert_eq!(li.source_mtime, i.source_mtime);
