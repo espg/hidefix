@@ -1,8 +1,10 @@
+pub mod attributes;
 mod chunk;
 mod dataset;
 mod index;
 pub mod serde;
 
+pub use self::attributes::{AttributeValue, Attributes};
 pub use self::index::{GroupIndex, Index};
 pub use chunk::{Chunk, ULE};
 pub use dataset::{Dataset, DatasetD, DatasetExt, Datatype};
