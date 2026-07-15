@@ -30,7 +30,9 @@ class HidefixBackendEntrypoint(BackendEntrypoint):
     available = True
     description = "Open netCDF4 files with the multi-threaded Hidefix backend in Xarray"
     url = "https://github.com/gauteh/hidefix"
-    open_dataset_parameters = ["filename_or_obj", "drop_variables"]
+    open_dataset_parameters = [
+        "filename_or_obj", "drop_variables", "index", "index_fingerprint"
+    ]
 
     def open_dataset(
         self,
@@ -44,12 +46,31 @@ class HidefixBackendEntrypoint(BackendEntrypoint):
         use_cftime=None,
         decode_timedelta=None,
         group=None,
+        index=None,
+        index_fingerprint='verify',
     ):
-        # TODO: allow take an existing index, maybe from a serialized object.
+        """Open a netCDF4/HDF5 file with the hidefix engine.
 
+        `index` skips re-indexing the file: either a `hidefix.Index`, or a
+        path to / the bytes of one serialized with `Index.save` /
+        `Index.to_bytes`. The index's source fingerprint (path identity, size
+        and mtime, when known) is verified against the file; pass
+        `index_fingerprint='ignore'` to skip the check ('verify' is the
+        default).
+        """
         filename_or_obj = _normalize_path(filename_or_obj)
 
-        store = HidefixDataStore.open(filename_or_obj, group)
+        if index is not None:
+            if not isinstance(index, hidefix.Index):
+                index = hidefix.Index.load_index(index)
+            if index_fingerprint == 'verify':
+                _verify_index_fingerprint(index, filename_or_obj)
+            elif index_fingerprint != 'ignore':
+                raise ValueError(
+                    "index_fingerprint must be 'verify' or 'ignore', got: "
+                    f"{index_fingerprint!r}")
+
+        store = HidefixDataStore.open(filename_or_obj, group, index)
 
         store_entrypoint = StoreBackendEntrypoint()
         return store_entrypoint.open_dataset(
@@ -71,22 +92,48 @@ class HidefixBackendEntrypoint(BackendEntrypoint):
         return ext in {".nc", ".nc4", ".cdf"}
 
 
+def _verify_index_fingerprint(index, filename):
+    """Raise ValueError when `index` does not match `filename`: identity by
+    path, staleness by size + mtime (a size or mtime of 0 means unknown and is
+    not checked)."""
+    source = index.source_path
+    if source is not None and os.path.exists(source) and os.path.exists(
+            filename) and not os.path.samefile(source, filename):
+        raise ValueError(
+            f"index was built from {source!r}, not {filename!r} (reads go "
+            "through the indexed path); re-index the file or pass "
+            "index_fingerprint='ignore'")
+
+    if index.source_size == 0 or index.source_mtime == 0:
+        return
+
+    st = os.stat(filename)
+    if st.st_size != index.source_size or int(
+            st.st_mtime) != index.source_mtime:
+        raise ValueError(
+            f"index is stale for {filename!r}: indexed size/mtime "
+            f"({index.source_size}, {index.source_mtime}) does not match the "
+            f"file ({st.st_size}, {int(st.st_mtime)}); re-index the file or "
+            "pass index_fingerprint='ignore'")
+
+
 class HidefixDataStore(WritableCFDataStore):
     idx: hidefix.Index
     path: str
     group: str
 
-    def __init__(self, path, group=None):
+    def __init__(self, path, group=None, index=None):
         self.path = path
         self.group = group
 
-        self.idx = hidefix.Index(path)
+        self.idx = hidefix.Index(path) if index is None else index
 
     @classmethod
     def open(
         cls,
         filename,
         group,
+        index=None,
     ):
         if isinstance(filename, os.PathLike):
             filename = os.fspath(filename)
@@ -95,7 +142,7 @@ class HidefixDataStore(WritableCFDataStore):
             raise ValueError(
                 "the hidefix backend can only read file-like objects")
 
-        return cls(filename, group)
+        return cls(filename, group, index)
 
     def get_attrs(self):
         return FrozenDict(self.idx.attributes(self.group))
@@ -121,12 +168,16 @@ class HidefixDataStore(WritableCFDataStore):
 
     def open_store_variable(self, k):
         ds = self.idx.dataset(k, self.group)
-        # NOTE (phase 2): dataset_attributes/dataset_dims raise KeyError on an
-        # index serialized before dataset_meta existed (empty metadata). The
-        # backend builds a fresh index today so this is unreachable; the
-        # serialized-index opening path introduced in phase 2 must guard here.
-        attributes = self.idx.dataset_attributes(k, self.group)
-        dimensions = tuple(self.idx.dataset_dims(k, self.group))
+        try:
+            attributes = self.idx.dataset_attributes(k, self.group)
+            dimensions = tuple(self.idx.dataset_dims(k, self.group))
+        except KeyError:
+            # only reachable with a loaded index serialized before hidefix
+            # captured attributes and dimension names.
+            raise ValueError(
+                f"index has no metadata for variable {k!r}: it was likely "
+                "serialized by an older hidefix; re-index the file with a "
+                "current hidefix (hidefix.Index(path))") from None
 
         data = indexing.LazilyIndexedArray(
             HidefixArray(self, k, self.group, ds, attributes))
