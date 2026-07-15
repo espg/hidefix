@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use super::*;
+use crate::filters::byteorder::Order as ByteOrder;
 use crate::prelude::{ParReader, Reader, Streamer};
 
 /// Dataset in possible dimensions.
@@ -110,6 +111,8 @@ pub trait DatasetExt {
 
     fn dtype(&self) -> Datatype;
 
+    fn order(&self) -> ByteOrder;
+
     fn dsize(&self) -> usize;
 
     fn shape(&self) -> &[u64];
@@ -128,6 +131,10 @@ impl DatasetExt for DatasetD<'_> {
 
     fn dtype(&self) -> Datatype {
         self.inner().dtype()
+    }
+
+    fn order(&self) -> ByteOrder {
+        self.inner().order()
     }
 
     fn dsize(&self) -> usize {

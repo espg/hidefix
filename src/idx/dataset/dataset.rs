@@ -380,6 +380,10 @@ impl<const D: usize> DatasetExt for Dataset<'_, D> {
         self.dtype
     }
 
+    fn order(&self) -> ByteOrder {
+        self.order
+    }
+
     fn dsize(&self) -> usize {
         self.dsize
     }

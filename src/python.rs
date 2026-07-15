@@ -1,12 +1,13 @@
 //! Wrappers for using hidefix in Python.
 
-use crate::filters::byteorder::ToNative;
+use crate::filters::byteorder::{Order as ByteOrder, ToNative};
 use byte_slice_cast::ToMutByteSlice;
 use ndarray::parallel::prelude::*;
 use numpy::{PyArray, PyArray1, PyArrayDyn};
 use pyo3::{
+    exceptions::PyKeyError,
     prelude::*,
-    types::{PyInt, PySlice, PyTuple},
+    types::{PyDict, PyInt, PySlice, PyTuple},
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,6 +25,38 @@ fn hidefix(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[derive(Debug)]
 struct Index {
     idx: Arc<idx::Index<'static>>,
+}
+
+impl Index {
+    fn group_index(&self, group: Option<&str>) -> PyResult<&idx::GroupIndex<'_>> {
+        match group {
+            Some(group) => self
+                .idx
+                .group(group)
+                .ok_or_else(|| PyKeyError::new_err(format!("group not found: {group}"))),
+            None => Ok(&self.idx),
+        }
+    }
+}
+
+fn attributes_to_py(py: Python, attrs: &idx::Attributes) -> PyResult<PyObject> {
+    use idx::AttributeValue as A;
+
+    let dict = PyDict::new_bound(py);
+    for (k, v) in attrs {
+        let v = match v {
+            A::Str(v) => v.to_object(py),
+            A::Strs(v) => v.to_object(py),
+            A::Int(v) => v.to_object(py),
+            A::Ints(v) => v.to_object(py),
+            A::Uint(v) => v.to_object(py),
+            A::Uints(v) => v.to_object(py),
+            A::Float(v) => v.to_object(py),
+            A::Floats(v) => v.to_object(py),
+        };
+        dict.set_item(k, v)?;
+    }
+    Ok(dict.into())
 }
 
 #[pymethods]
@@ -49,6 +82,34 @@ impl Index {
 
     fn __getitem__(&self, s: &str) -> Option<Dataset> {
         self.dataset(s, None)
+    }
+
+    /// Attributes of a group as a dict (`group=None`: the global attributes).
+    pub fn attributes(&self, py: Python, group: Option<&str>) -> PyResult<PyObject> {
+        attributes_to_py(py, self.group_index(group)?.attributes())
+    }
+
+    /// Attributes of a dataset as a dict.
+    pub fn dataset_attributes(
+        &self,
+        py: Python,
+        s: &str,
+        group: Option<&str>,
+    ) -> PyResult<PyObject> {
+        let attrs = self
+            .group_index(group)?
+            .dataset_attributes(s)
+            .ok_or_else(|| PyKeyError::new_err(format!("dataset not found: {s}")))?;
+        attributes_to_py(py, attrs)
+    }
+
+    /// netCDF dimension names of a dataset, in order.
+    pub fn dataset_dims(&self, s: &str, group: Option<&str>) -> PyResult<Vec<String>> {
+        Ok(self
+            .group_index(group)?
+            .dataset_dim_names(s)
+            .ok_or_else(|| PyKeyError::new_err(format!("dataset not found: {s}")))?
+            .to_vec())
     }
 
     pub fn datasets(&self, group: Option<&str>) -> Vec<String> {
@@ -184,6 +245,23 @@ impl Dataset {
 
     fn chunk_shape<'py>(&self, py: Python<'py>) -> &'py PyArray1<u64> {
         PyArray::from_slice(py, self.dataset().chunk_shape())
+    }
+
+    /// Numpy dtype string (e.g. "<f4").
+    fn dtype(&self) -> String {
+        let ds = self.dataset();
+        let order = match ds.inner().order() {
+            ByteOrder::BE => '>',
+            ByteOrder::LE => '<',
+            ByteOrder::Unknown => '=',
+        };
+        let (kind, size) = match ds.dtype() {
+            Datatype::UInt(sz) => ('u', sz),
+            Datatype::Int(sz) => ('i', sz),
+            Datatype::Float(sz) => ('f', sz),
+            Datatype::Custom(sz) => ('V', sz),
+        };
+        format!("{order}{kind}{size}")
     }
 
     fn __getitem__<'py>(&self, py: Python<'py>, slice: &PyTuple) -> PyResult<&'py PyAny> {
