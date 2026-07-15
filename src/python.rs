@@ -39,20 +39,71 @@ impl Index {
     }
 }
 
+/// Build a numpy value of the concrete element type `T` from widened values.
+///
+/// Single-element attributes become a numpy scalar (e.g. `np.float32`), matching
+/// netCDF4-python; multi-element attributes become a 1-D numpy array. Preserving
+/// the width end-to-end keeps a packed variable's `scale_factor`/`add_offset` at
+/// their original dtype so unpacking does not silently upcast (and drift) to
+/// float64.
+fn numeric_to_py<T>(py: Python, vals: Vec<T>, scalar: bool) -> PyResult<PyObject>
+where
+    T: numpy::Element,
+{
+    let arr = PyArray1::<T>::from_vec(py, vals);
+    if scalar {
+        let any: &PyAny = arr.as_ref();
+        Ok(any.get_item(0)?.to_object(py))
+    } else {
+        Ok(arr.to_object(py))
+    }
+}
+
 fn attributes_to_py(py: Python, attrs: &idx::Attributes) -> PyResult<PyObject> {
     use idx::AttributeValue as A;
+
+    // Narrow the widened storage value(s) back to the source byte-width and hand
+    // the concrete Rust type to numpy so the dtype round-trips exactly.
+    macro_rules! ints {
+        ($vals:expr, $size:expr, $scalar:expr) => {
+            match $size {
+                1 => numeric_to_py(py, $vals.iter().map(|&x| x as i8).collect(), $scalar)?,
+                2 => numeric_to_py(py, $vals.iter().map(|&x| x as i16).collect(), $scalar)?,
+                4 => numeric_to_py(py, $vals.iter().map(|&x| x as i32).collect(), $scalar)?,
+                _ => numeric_to_py(py, $vals.iter().map(|&x| x as i64).collect(), $scalar)?,
+            }
+        };
+    }
+    macro_rules! uints {
+        ($vals:expr, $size:expr, $scalar:expr) => {
+            match $size {
+                1 => numeric_to_py(py, $vals.iter().map(|&x| x as u8).collect(), $scalar)?,
+                2 => numeric_to_py(py, $vals.iter().map(|&x| x as u16).collect(), $scalar)?,
+                4 => numeric_to_py(py, $vals.iter().map(|&x| x as u32).collect(), $scalar)?,
+                _ => numeric_to_py(py, $vals.iter().map(|&x| x as u64).collect(), $scalar)?,
+            }
+        };
+    }
+    macro_rules! floats {
+        ($vals:expr, $size:expr, $scalar:expr) => {
+            match $size {
+                4 => numeric_to_py(py, $vals.iter().map(|&x| x as f32).collect(), $scalar)?,
+                _ => numeric_to_py(py, $vals.iter().map(|&x| x as f64).collect(), $scalar)?,
+            }
+        };
+    }
 
     let dict = PyDict::new_bound(py);
     for (k, v) in attrs {
         let v = match v {
             A::Str(v) => v.to_object(py),
             A::Strs(v) => v.to_object(py),
-            A::Int(v) => v.to_object(py),
-            A::Ints(v) => v.to_object(py),
-            A::Uint(v) => v.to_object(py),
-            A::Uints(v) => v.to_object(py),
-            A::Float(v) => v.to_object(py),
-            A::Floats(v) => v.to_object(py),
+            A::Int(v, sz) => ints!(std::slice::from_ref(v), *sz, true),
+            A::Ints(v, sz) => ints!(v.as_slice(), *sz, false),
+            A::Uint(v, sz) => uints!(std::slice::from_ref(v), *sz, true),
+            A::Uints(v, sz) => uints!(v.as_slice(), *sz, false),
+            A::Float(v, sz) => floats!(std::slice::from_ref(v), *sz, true),
+            A::Floats(v, sz) => floats!(v.as_slice(), *sz, false),
         };
         dict.set_item(k, v)?;
     }

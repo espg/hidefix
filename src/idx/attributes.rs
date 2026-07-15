@@ -9,17 +9,23 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-/// A single attribute value, widened to the largest of its kind.
+/// A single attribute value.
+///
+/// Numeric values are widened to the largest of their kind (`i64`/`u64`/`f64`)
+/// for storage, but each variant also carries the source byte-width so the
+/// original dtype can be reconstructed exactly (e.g. a `float32` `scale_factor`
+/// decodes as `float32`, not `float64` — matching netCDF4-python and avoiding
+/// value drift when packed variables are unpacked).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum AttributeValue {
     Str(String),
     Strs(Vec<String>),
-    Int(i64),
-    Ints(Vec<i64>),
-    Uint(u64),
-    Uints(Vec<u64>),
-    Float(f64),
-    Floats(Vec<f64>),
+    Int(i64, u8),
+    Ints(Vec<i64>, u8),
+    Uint(u64, u8),
+    Uints(Vec<u64>, u8),
+    Float(f64, u8),
+    Floats(Vec<f64>, u8),
 }
 
 /// Attributes of a group or dataset, ordered for deterministic serialization.
@@ -77,6 +83,10 @@ fn read_attribute(loc: &hdf5::Location, name: &str) -> Result<AttributeValue, an
 
     let attr = loc.attr(name)?;
     let td = attr.dtype()?.to_descriptor()?;
+    // Source byte-width of the element type; carried on numeric variants so the
+    // original dtype (int8/16/32/64, uint*, float32/64) is reconstructable even
+    // though values are read widened.
+    let size = td.size() as u8;
     // netCDF stores single-value attributes as 1-element arrays; a length-1
     // read collapses to the scalar variant either way.
     let scalar = attr.size() <= 1;
@@ -97,20 +107,20 @@ fn read_attribute(loc: &hdf5::Location, name: &str) -> Result<AttributeValue, an
         TD::Integer(_) | TD::Boolean | TD::Enum(_) => collapse(
             attr.read_raw::<i64>()?,
             scalar,
-            AttributeValue::Int,
-            AttributeValue::Ints,
+            |v| AttributeValue::Int(v, size),
+            |v| AttributeValue::Ints(v, size),
         ),
         TD::Unsigned(_) => collapse(
             attr.read_raw::<u64>()?,
             scalar,
-            AttributeValue::Uint,
-            AttributeValue::Uints,
+            |v| AttributeValue::Uint(v, size),
+            |v| AttributeValue::Uints(v, size),
         ),
         TD::Float(_) => collapse(
             attr.read_raw::<f64>()?,
             scalar,
-            AttributeValue::Float,
-            AttributeValue::Floats,
+            |v| AttributeValue::Float(v, size),
+            |v| AttributeValue::Floats(v, size),
         ),
         // libhdf5 registers no fixed<->vlen string conversion (h5py performs
         // that conversion in software), so fixed strings are read raw with the
