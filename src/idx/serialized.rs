@@ -186,6 +186,9 @@ mod tests {
         b.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
 
         let e = SerializedIndex::from_bytes(&b).unwrap_err();
-        assert!(e.to_string().contains("invalid serialized index payload"), "{e}");
+        assert!(
+            e.to_string().contains("invalid serialized index payload"),
+            "{e}"
+        );
     }
 }

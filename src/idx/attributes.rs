@@ -249,7 +249,10 @@ mod tests {
 
         let sst = hf.dataset("SST").unwrap();
         let attrs = read_attributes(&sst);
-        assert_eq!(attrs.get("units"), Some(&AttributeValue::Str("Deg C".into())));
+        assert_eq!(
+            attrs.get("units"),
+            Some(&AttributeValue::Str("Deg C".into()))
+        );
         assert!(attrs.contains_key("long_name"));
         assert!(attrs.contains_key("missing_value"));
         assert!(!attrs.contains_key("DIMENSION_LIST"));
@@ -264,4 +267,3 @@ mod tests {
         let _ = Index::index("tests/data/coads_climatology.nc4").unwrap();
     }
 }
-
