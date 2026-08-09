@@ -27,6 +27,12 @@ pub const FORMAT_VERSION: u32 = 1;
 /// A serialized [`Index`] together with a fingerprint (path, size, mtime) of
 /// the source file the index was built from. A size or mtime of `0` means
 /// unknown; staleness policy is left to the consumer.
+///
+/// The fingerprint is best-effort, not cryptographic: `source_mtime` has
+/// whole-second granularity, so a rewrite that lands within the same second
+/// and leaves the file the same size is indistinguishable from no change at
+/// all. Consumers that need certainty about content should hash the source
+/// themselves rather than rely on this.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SerializedIndex {
     /// Path of the source file at indexing time.
