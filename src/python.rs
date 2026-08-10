@@ -2,8 +2,7 @@
 
 use crate::filters::byteorder::{Order as ByteOrder, ToNative};
 use byte_slice_cast::ToMutByteSlice;
-use ndarray::parallel::prelude::*;
-use numpy::{PyArray, PyArray1, PyArrayDyn};
+use numpy::{PyArray, PyArray1, PyArrayDyn, PyArrayMethods};
 use pyo3::{
     exceptions::{PyKeyError, PyTypeError},
     prelude::*,
@@ -193,20 +192,26 @@ impl Index {
 /// the width end-to-end keeps a packed variable's `scale_factor`/`add_offset` at
 /// their original dtype so unpacking does not silently upcast (and drift) to
 /// float64.
-fn numeric_to_py<T>(py: Python, vals: Vec<T>, scalar: bool) -> PyResult<PyObject>
+fn numeric_to_py<'py, T>(
+    py: Python<'py>,
+    vals: Vec<T>,
+    scalar: bool,
+) -> PyResult<Bound<'py, PyAny>>
 where
     T: numpy::Element,
 {
     let arr = PyArray1::<T>::from_vec(py, vals);
     if scalar {
-        let any: &PyAny = arr.as_ref();
-        Ok(any.get_item(0)?.to_object(py))
+        arr.as_any().get_item(0)
     } else {
-        Ok(arr.to_object(py))
+        Ok(arr.into_any())
     }
 }
 
-fn attributes_to_py(py: Python, attrs: &idx::Attributes) -> PyResult<PyObject> {
+fn attributes_to_py<'py>(
+    py: Python<'py>,
+    attrs: &idx::Attributes,
+) -> PyResult<Bound<'py, PyAny>> {
     use idx::AttributeValue as A;
 
     // Narrow the widened storage value(s) back to the source byte-width and hand
@@ -240,11 +245,11 @@ fn attributes_to_py(py: Python, attrs: &idx::Attributes) -> PyResult<PyObject> {
         };
     }
 
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     for (k, v) in attrs {
         let v = match v {
-            A::Str(v) => v.to_object(py),
-            A::Strs(v) => v.to_object(py),
+            A::Str(v) => v.into_pyobject(py)?.into_any(),
+            A::Strs(v) => v.into_pyobject(py)?.into_any(),
             A::Int(v, sz) => ints!(std::slice::from_ref(v), *sz, true),
             A::Ints(v, sz) => ints!(v.as_slice(), *sz, false),
             A::Uint(v, sz) => uints!(std::slice::from_ref(v), *sz, true),
@@ -254,7 +259,7 @@ fn attributes_to_py(py: Python, attrs: &idx::Attributes) -> PyResult<PyObject> {
         };
         dict.set_item(k, v)?;
     }
-    Ok(dict.into())
+    Ok(dict.into_any())
 }
 
 #[pymethods]
@@ -279,13 +284,13 @@ impl Index {
     /// Serialize the index (with a format-version and source-fingerprint
     /// header) to bytes accepted by `load_index`.
     pub fn to_bytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        Ok(PyBytes::new_bound(py, &self.serialized()?))
+        Ok(PyBytes::new(py, &self.serialized()?))
     }
 
     /// Serialize the index to a file, see `to_bytes`.
     pub fn save(&self, py: Python, p: PathBuf) -> PyResult<()> {
         let b = self.serialized()?;
-        py.allow_threads(|| std::fs::write(p, b))?;
+        py.detach(|| std::fs::write(p, b))?;
         Ok(())
     }
 
@@ -294,10 +299,10 @@ impl Index {
     #[staticmethod]
     pub fn load_index(py: Python, source: &Bound<'_, PyAny>) -> PyResult<Index> {
         let read;
-        let bytes = if let Ok(b) = source.downcast::<PyBytes>() {
+        let bytes = if let Ok(b) = source.cast::<PyBytes>() {
             b.as_bytes()
         } else if let Ok(p) = source.extract::<PathBuf>() {
-            read = py.allow_threads(|| std::fs::read(&p))?;
+            read = py.detach(|| std::fs::read(&p))?;
             read.as_slice()
         } else {
             return Err(PyTypeError::new_err(
@@ -332,17 +337,21 @@ impl Index {
     }
 
     /// Attributes of a group as a dict (`group=None`: the global attributes).
-    pub fn attributes(&self, py: Python, group: Option<&str>) -> PyResult<PyObject> {
+    pub fn attributes<'py>(
+        &self,
+        py: Python<'py>,
+        group: Option<&str>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         attributes_to_py(py, self.group_index(group)?.attributes())
     }
 
     /// Attributes of a dataset as a dict.
-    pub fn dataset_attributes(
+    pub fn dataset_attributes<'a>(
         &self,
-        py: Python,
+        py: Python<'a>,
         s: &str,
         group: Option<&str>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Bound<'a, PyAny>> {
         let attrs = self
             .group_index(group)?
             .dataset_attributes(s)
@@ -392,7 +401,7 @@ struct Dataset {
 }
 
 impl Dataset {
-    fn dataset(&self) -> &idx::DatasetD {
+    fn dataset(&self) -> &idx::DatasetD<'_> {
         match &self.group {
             Some(group) => self.idx.group(&group).unwrap().dataset(&self.ds).unwrap(),
             None => self.idx.dataset(&self.ds).unwrap(),
@@ -405,7 +414,7 @@ impl Dataset {
         ds: &idx::DatasetD<'_>,
         indices: &[u64],
         counts: &[u64],
-    ) -> PyResult<&'py PyAny>
+    ) -> PyResult<Bound<'py, PyAny>>
     where
         T: numpy::Element + ToMutByteSlice + 'py,
         [T]: ToNative,
@@ -421,71 +430,70 @@ impl Dataset {
             dims.push(1);
         }
 
-        let (a, dst) = unsafe {
-            let a = PyArray::<T, _>::new(py, dims, false);
-            let dst = a.as_slice_mut()?;
+        let a = unsafe { PyArray::<T, _>::new(py, dims, false) };
 
-            (a, dst)
-        };
+        {
+            let dst = unsafe { a.as_slice_mut()? };
 
-        py.allow_threads(|| -> Result<usize, anyhow::Error> {
-            // Chunks are fetched with concurrent range requests (the S3 reader is
-            // internally concurrent, not rayon-parallel like the local reader).
-            #[cfg(feature = "s3")]
-            if let Some(s3) = &self.s3 {
-                let mut r = ds.as_s3_reader(s3.bucket.clone(), &s3.key)?;
-                return r.values_to((indices, counts), dst);
-            }
+            py.detach(|| -> Result<usize, anyhow::Error> {
+                // Chunks are fetched with concurrent range requests (the S3 reader is
+                // internally concurrent, not rayon-parallel like the local reader).
+                #[cfg(feature = "s3")]
+                if let Some(s3) = &self.s3 {
+                    let mut r = ds.as_s3_reader(s3.bucket.clone(), &s3.key)?;
+                    return r.values_to((indices, counts), dst);
+                }
 
-            let r = ds.as_par_reader(&self.idx.path().unwrap())?;
-            r.values_to_par((indices, counts), dst)
-        })?;
+                let r = ds.as_par_reader(&self.idx.path().unwrap())?;
+                r.values_to_par((indices, counts), dst)
+            })?;
+        }
 
-        Ok(a.as_ref())
+        Ok(a.into_any())
     }
 
-    #[cfg(off)]
+    #[cfg(any())]
     fn read_ndarray<'py, T>(
         &self,
         py: Python<'py>,
         ds: &idx::DatasetD<'_>,
         indices: &[u64],
         counts: &[u64],
-    ) -> PyResult<&'py PyAny>
+    ) -> PyResult<Bound<'py, PyAny>>
     where
         T: Default + numpy::Element + ToMutByteSlice + 'py,
         [T]: ToNative,
     {
-        let a = py.allow_threads(|| {
+        let a = py.detach(|| {
             let r = ds.as_par_reader(&self.idx.path().unwrap())?;
             r.values_dyn_par((indices, counts))
         })?;
 
         let a = a.into_pyarray(py);
 
-        Ok(a)
+        Ok(a.into_any())
     }
 
     fn apply_fill_value_impl<'py, T>(
         &self,
-        _py: Python<'py>,
-        cond: &'py PyAny,
-        fv: &'py PyAny,
-        arr: &'py PyAny,
+        cond: &Bound<'py, PyAny>,
+        fv: &Bound<'py, PyAny>,
+        arr: &Bound<'py, PyAny>,
     ) where
         T: Clone
-            + pyo3::conversion::FromPyObject<'py>
+            + FromPyObjectOwned<'py>
             + numpy::Element
             + Sync
             + std::cmp::PartialEq
             + Copy,
+        for<'a, 'b> <T as pyo3::FromPyObject<'a, 'b>>::Error: std::fmt::Debug,
     {
         let cond: T = cond.extract().unwrap();
         let fv: T = fv.extract().unwrap();
-        let arr = arr.downcast::<PyArrayDyn<T>>().unwrap();
+        let arr = arr.cast::<PyArrayDyn<T>>().unwrap();
 
         let mut v = unsafe { arr.as_array_mut() };
-        v.par_mapv_inplace(|v| if v == cond { fv } else { v });
+        ndarray::Zip::from(&mut v).par_for_each(|v| if *v == cond { *v = fv });
     }
 }
 
@@ -512,11 +520,11 @@ impl Dataset {
         self.dataset().size()
     }
 
-    fn shape<'py>(&self, py: Python<'py>) -> &'py PyArray1<u64> {
+    fn shape<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u64>> {
         PyArray::from_slice(py, self.dataset().shape())
     }
 
-    fn chunk_shape<'py>(&self, py: Python<'py>) -> &'py PyArray1<u64> {
+    fn chunk_shape<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<u64>> {
         PyArray::from_slice(py, self.dataset().chunk_shape())
     }
 
@@ -537,7 +545,11 @@ impl Dataset {
         format!("{order}{kind}{size}")
     }
 
-    fn __getitem__<'py>(&self, py: Python<'py>, slice: &PyTuple) -> PyResult<&'py PyAny> {
+    fn __getitem__<'py>(
+        &self,
+        py: Python<'py>,
+        slice: &Bound<'_, PyTuple>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let ds = self.dataset();
         let shape = ds.shape();
 
@@ -546,9 +558,9 @@ impl Dataset {
         let (mut indices, (mut counts, mut strides)): (Vec<_>, (Vec<_>, Vec<_>)) = slice
             .iter()
             .map(|el| match el {
-                el if el.is_instance_of::<PySlice>() => el.downcast::<PySlice>().unwrap(),
+                el if el.is_instance_of::<PySlice>() => el.cast_into::<PySlice>().unwrap(),
                 el if el.is_instance_of::<PyInt>() => {
-                    let ind: isize = el.downcast::<PyInt>().unwrap().extract().unwrap();
+                    let ind: isize = el.extract().unwrap();
                     PySlice::new(py, ind, ind + 1, 1)
                 }
                 _ => unimplemented!(),
@@ -586,23 +598,23 @@ impl Dataset {
 
     pub fn apply_fill_value<'py>(
         &self,
-        py: Python<'py>,
-        cond: &PyAny,
-        fv: &PyAny,
-        arr: &'py PyAny,
+        _py: Python<'py>,
+        cond: &Bound<'py, PyAny>,
+        fv: &Bound<'py, PyAny>,
+        arr: &Bound<'py, PyAny>,
     ) {
         let ds = self.dataset();
         match ds.dtype() {
-            Datatype::UInt(sz) if sz == 1 => self.apply_fill_value_impl::<u8>(py, cond, fv, arr),
-            Datatype::UInt(sz) if sz == 2 => self.apply_fill_value_impl::<u16>(py, cond, fv, arr),
-            Datatype::UInt(sz) if sz == 4 => self.apply_fill_value_impl::<u32>(py, cond, fv, arr),
-            Datatype::UInt(sz) if sz == 8 => self.apply_fill_value_impl::<u64>(py, cond, fv, arr),
-            Datatype::Int(sz) if sz == 1 => self.apply_fill_value_impl::<i8>(py, cond, fv, arr),
-            Datatype::Int(sz) if sz == 2 => self.apply_fill_value_impl::<i16>(py, cond, fv, arr),
-            Datatype::Int(sz) if sz == 4 => self.apply_fill_value_impl::<i32>(py, cond, fv, arr),
-            Datatype::Int(sz) if sz == 8 => self.apply_fill_value_impl::<i64>(py, cond, fv, arr),
-            Datatype::Float(sz) if sz == 4 => self.apply_fill_value_impl::<f32>(py, cond, fv, arr),
-            Datatype::Float(sz) if sz == 8 => self.apply_fill_value_impl::<f64>(py, cond, fv, arr),
+            Datatype::UInt(sz) if sz == 1 => self.apply_fill_value_impl::<u8>(cond, fv, arr),
+            Datatype::UInt(sz) if sz == 2 => self.apply_fill_value_impl::<u16>(cond, fv, arr),
+            Datatype::UInt(sz) if sz == 4 => self.apply_fill_value_impl::<u32>(cond, fv, arr),
+            Datatype::UInt(sz) if sz == 8 => self.apply_fill_value_impl::<u64>(cond, fv, arr),
+            Datatype::Int(sz) if sz == 1 => self.apply_fill_value_impl::<i8>(cond, fv, arr),
+            Datatype::Int(sz) if sz == 2 => self.apply_fill_value_impl::<i16>(cond, fv, arr),
+            Datatype::Int(sz) if sz == 4 => self.apply_fill_value_impl::<i32>(cond, fv, arr),
+            Datatype::Int(sz) if sz == 8 => self.apply_fill_value_impl::<i64>(cond, fv, arr),
+            Datatype::Float(sz) if sz == 4 => self.apply_fill_value_impl::<f32>(cond, fv, arr),
+            Datatype::Float(sz) if sz == 8 => self.apply_fill_value_impl::<f64>(cond, fv, arr),
             _ => unimplemented!(),
         }
     }
@@ -627,7 +639,8 @@ mod tests {
             let i = Index::new("tests/data/coads_climatology.nc4".into()).unwrap();
             let ds = i.dataset("SST", None).unwrap();
 
-            let arr = ds.__getitem__(py, PyTuple::new(py, vec![PySlice::new(py, 0, 10, 1)]));
+            let slice = PyTuple::new(py, vec![PySlice::new(py, 0, 10, 1)]).unwrap();
+            let arr = ds.__getitem__(py, &slice);
             println!("{:?}", arr);
         });
     }
@@ -638,7 +651,8 @@ mod tests {
             let i = Index::new("tests/data/coads_climatology.nc4".into()).unwrap();
             let ds = i.dataset("SST", None).unwrap();
 
-            let arr = ds.__getitem__(py, PyTuple::new(py, vec![0, 10, 1]));
+            let slice = PyTuple::new(py, vec![0, 10, 1]).unwrap();
+            let arr = ds.__getitem__(py, &slice);
             println!("{:?}", arr);
         });
     }
@@ -661,7 +675,8 @@ mod tests {
             );
 
             let ds = li.dataset("SST", None).unwrap();
-            ds.__getitem__(py, PyTuple::new(py, vec![PySlice::new(py, 0, 10, 1)]))
+            let slice = PyTuple::new(py, vec![PySlice::new(py, 0, 10, 1)]).unwrap();
+            ds.__getitem__(py, &slice)
                 .unwrap();
         });
     }
@@ -673,15 +688,17 @@ mod tests {
             let ds = i.dataset("SST", None).unwrap();
 
             let arr = ds
-                .__getitem__(py, PyTuple::new(py, vec![0, 10, 1]))
+                .__getitem__(py, &PyTuple::new(py, vec![0, 10, 1]).unwrap())
                 .unwrap();
             println!("{:?}", arr);
 
             // apply fill value
+            let cond = PyFloat::new(py, -1.0e+34);
+            let fv = PyFloat::new(py, f64::NAN);
             ds.apply_fill_value(
                 py,
-                PyFloat::new(py, -1.0e+34),
-                PyFloat::new(py, f64::NAN),
+                cond.as_any(),
+                fv.as_any(),
                 &arr,
             );
         });
