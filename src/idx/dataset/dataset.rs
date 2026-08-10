@@ -316,7 +316,7 @@ impl<const D: usize> Dataset<'_, D> {
             .map(|(i, c)| i + c)
             .zip(self.shape.iter())
             .any(|(l, &s)| l > s)
-            || counts.iter().any(|&c| c == 0)
+            || counts.contains(&0)
         {
             // Out of bounds or counts is zero in any dimension.
             ChunkSlicer::empty(self)
