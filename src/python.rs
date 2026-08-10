@@ -36,7 +36,7 @@ fn hidefix(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// A custom `endpoint` (e.g. `http://localhost:9000` for Minio) implies
 /// path-style addressing unless overridden with `path_style`.
 #[cfg(feature = "s3")]
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 struct S3Source {
     bucket: Box<s3::Bucket>,
@@ -430,10 +430,11 @@ impl Dataset {
             dims.push(1);
         }
 
-        let a = unsafe { PyArray::<T, _>::new(py, dims, false) };
+        let a = PyArray::<T, _>::zeros(py, dims, false);
 
         {
-            let dst = unsafe { a.as_slice_mut()? };
+            let mut rw = a.readwrite();
+            let dst = rw.as_slice_mut()?;
 
             py.detach(|| -> Result<usize, anyhow::Error> {
                 // Chunks are fetched with concurrent range requests (the S3 reader is
@@ -492,7 +493,8 @@ impl Dataset {
         let fv: T = fv.extract().unwrap();
         let arr = arr.cast::<PyArrayDyn<T>>().unwrap();
 
-        let mut v = unsafe { arr.as_array_mut() };
+        let mut rw = arr.readwrite();
+        let mut v = rw.as_array_mut();
         ndarray::Zip::from(&mut v).par_for_each(|v| if *v == cond { *v = fv });
     }
 }
