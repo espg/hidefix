@@ -630,9 +630,9 @@ mod tests {
     /// The interpreter is initialized explicitly (rather than through pyo3's
     /// `auto-initialize` feature, which breaks wheel builds against statically linked
     /// pythons like the manylinux ones).
-    fn with_gil<F: FnOnce(Python) -> R, R>(f: F) -> R {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(f)
+    fn with_gil<F: for<'py> FnOnce(Python<'py>) -> R, R>(f: F) -> R {
+        Python::initialize();
+        Python::attach(f)
     }
 
     #[test]
