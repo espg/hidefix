@@ -318,6 +318,7 @@ impl Index {
         })
     }
 
+    #[pyo3(signature = (s, group=None))]
     pub fn dataset(&self, s: &str, group: Option<&str>) -> Option<Dataset> {
         match group {
             Some(group) => self.idx.group(group).and_then(|g| g.dataset(s)),
@@ -346,6 +347,7 @@ impl Index {
     }
 
     /// Attributes of a dataset as a dict.
+    #[pyo3(signature = (s, group=None))]
     pub fn dataset_attributes<'a>(
         &self,
         py: Python<'a>,
@@ -360,6 +362,7 @@ impl Index {
     }
 
     /// netCDF dimension names of a dataset, in order.
+    #[pyo3(signature = (s, group=None))]
     pub fn dataset_dims(&self, s: &str, group: Option<&str>) -> PyResult<Vec<String>> {
         Ok(self
             .group_index(group)?
@@ -368,6 +371,7 @@ impl Index {
             .to_vec())
     }
 
+    #[pyo3(signature = (group=None))]
     pub fn datasets(&self, group: Option<&str>) -> Vec<String> {
         match group {
             Some(group) => match self.idx.group(group) {
