@@ -192,11 +192,7 @@ impl Index {
 /// the width end-to-end keeps a packed variable's `scale_factor`/`add_offset` at
 /// their original dtype so unpacking does not silently upcast (and drift) to
 /// float64.
-fn numeric_to_py<'py, T>(
-    py: Python<'py>,
-    vals: Vec<T>,
-    scalar: bool,
-) -> PyResult<Bound<'py, PyAny>>
+fn numeric_to_py<'py, T>(py: Python<'py>, vals: Vec<T>, scalar: bool) -> PyResult<Bound<'py, PyAny>>
 where
     T: numpy::Element,
 {
@@ -208,10 +204,7 @@ where
     }
 }
 
-fn attributes_to_py<'py>(
-    py: Python<'py>,
-    attrs: &idx::Attributes,
-) -> PyResult<Bound<'py, PyAny>> {
+fn attributes_to_py<'py>(py: Python<'py>, attrs: &idx::Attributes) -> PyResult<Bound<'py, PyAny>> {
     use idx::AttributeValue as A;
 
     // Narrow the widened storage value(s) back to the source byte-width and hand
@@ -485,12 +478,7 @@ impl Dataset {
         fv: &Bound<'py, PyAny>,
         arr: &Bound<'py, PyAny>,
     ) where
-        T: Clone
-            + FromPyObjectOwned<'py>
-            + numpy::Element
-            + Sync
-            + std::cmp::PartialEq
-            + Copy,
+        T: Clone + FromPyObjectOwned<'py> + numpy::Element + Sync + std::cmp::PartialEq + Copy,
         for<'a, 'b> <T as pyo3::FromPyObject<'a, 'b>>::Error: std::fmt::Debug,
     {
         let cond: T = cond.extract().unwrap();
@@ -499,7 +487,11 @@ impl Dataset {
 
         let mut rw = arr.readwrite();
         let mut v = rw.as_array_mut();
-        ndarray::Zip::from(&mut v).par_for_each(|v| if *v == cond { *v = fv });
+        ndarray::Zip::from(&mut v).par_for_each(|v| {
+            if *v == cond {
+                *v = fv
+            }
+        });
     }
 }
 
@@ -682,8 +674,7 @@ mod tests {
 
             let ds = li.dataset("SST", None).unwrap();
             let slice = PyTuple::new(py, vec![PySlice::new(py, 0, 10, 1)]).unwrap();
-            ds.__getitem__(py, &slice)
-                .unwrap();
+            ds.__getitem__(py, &slice).unwrap();
         });
     }
 
@@ -701,12 +692,7 @@ mod tests {
             // apply fill value
             let cond = PyFloat::new(py, -1.0e+34);
             let fv = PyFloat::new(py, f64::NAN);
-            ds.apply_fill_value(
-                py,
-                cond.as_any(),
-                fv.as_any(),
-                &arr,
-            );
+            ds.apply_fill_value(py, cond.as_any(), fv.as_any(), &arr);
         });
     }
 
