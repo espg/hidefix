@@ -76,11 +76,14 @@ jobs:
       - name: Start Minio
         run: docker compose -f tests/docker-compose.minio.yml up -d
       - name: Wait for Minio
-        run: curl -sf --retry 10 --retry-delay 1 --retry-all-errors http://localhost:9000/minio/health/live
+        run: curl -sf --retry 30 --retry-max-time 60 --retry-all-errors http://localhost:9000/minio/health/live
       - name: Run S3 tests
         env:
           HIDEFIX_S3_ENDPOINT: http://localhost:9000
         run: cargo test -vv --features s3 --test read_s3
+      - name: Minio logs
+        if: failure()
+        run: docker compose -f tests/docker-compose.minio.yml logs
 
   bench:
     name: Benchmark
